@@ -2,8 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
-	"crypto/sha256"
 	_ "embed"
 	"fmt"
 	"math/rand"
@@ -12,7 +10,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"syscall"
 	"time"
 
@@ -20,208 +17,209 @@ import (
 )
 
 //go:embed elliot.jpg
-var elliotImage []byte
+var embeddedImageData []byte
+
+const (
+	brightGreen = "\033[1;32m"
+	dimGreen    = "\033[2;32m"
+	brightWhite = "\033[1;97m"
+	jwmWhite    = "\033[1;97m"
+)
+
+var matrixChars = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()*&^%~`|/\\{}[]")
+
+type Drop struct {
+	y      float64
+	speed  float64
+	length int
+}
 
 func main() {
-	fmt.Print("\033]0;i am hacker\007")
+	_ = extractAndSetWallpaper()
 
-	cleanupChan := make(chan os.Signal, 1)
-	signal.Notify(cleanupChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-cleanupChan
-		restoreTerminal()
-		os.Exit(0)
-	}()
+	oldState, _ := term.MakeRaw(int(os.Stdin.Fd()))
 
-	homeDir, err := os.UserHomeDir()
-	if err == nil {
-		imgPath := filepath.Join(homeDir, ".elliot_opsec.jpg")
-		if !isWallpaperAlreadySet(imgPath) {
-			_ = os.WriteFile(imgPath, elliotImage, 0644)
-			setWallpaper(imgPath)
-		}
-	}
-
-	runNativeMatrix()
-}
-
-func restoreTerminal() {
-	fmt.Print("\033[?25h\033[0m\033[2J\033[H")
-}
-
-func isWallpaperAlreadySet(imgPath string) bool {
-	existingData, err := os.ReadFile(imgPath)
-	if err != nil {
-		return false
-	}
-	hashEmbedded := sha256.Sum256(elliotImage)
-	hashExisting := sha256.Sum256(existingData)
-	return bytes.Equal(hashEmbedded[:], hashExisting[:])
-}
-
-func setWallpaper(imgPath string) {
-	if runtime.GOOS == "windows" {
-		setWindowsWallpaper(imgPath)
-		return
-	}
-
-	desktop := strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP"))
-	session := strings.ToLower(os.Getenv("DESKTOP_SESSION"))
-
-	switch {
-	case strings.Contains(desktop, "gnome"), strings.Contains(desktop, "ubuntu"):
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "file://"+imgPath).Run()
-		_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "file://"+imgPath).Run()
-
-	case strings.Contains(desktop, "kde"), strings.Contains(desktop, "plasma"):
-		script := fmt.Sprintf(`string:
-			var Desktops = desktops();
-			for (i=0;i<Desktops.length;i++) {
-				d = Desktops[i];
-				d.wallpaperPlugin = "org.kde.image";
-				d.currentConfigGroup = Array("Wallpaper", "org.kde.image", "General");
-				d.writeConfig("Image", "%s");
-			}`, imgPath)
-		_ = exec.Command("qdbus", "org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.evaluateScript", script).Run()
-
-	case strings.Contains(desktop, "xfce"):
-		_ = exec.Command("xfconf-query", "-c", "xfce4-desktop", "-p", "/backdrop/screen0/monitor0/workspace0/last-image", "-s", imgPath).Run()
-		_ = exec.Command("xfconf-query", "-c", "xfce4-desktop", "-p", "/backdrop/screen0/monitor0/image-path", "-s", imgPath).Run()
-
-	case strings.Contains(desktop, "cinnamon"):
-		_ = exec.Command("gsettings", "set", "org.cinnamon.desktop.background", "picture-uri", "file://"+imgPath).Run()
-
-	case strings.Contains(desktop, "mate"):
-		_ = exec.Command("gsettings", "set", "org.mate.background", "picture-filename", imgPath).Run()
-
-	case strings.Contains(desktop, "lxde"), strings.Contains(session, "lxde"):
-		_ = exec.Command("pcmanfm", "--set-wallpaper", imgPath).Run()
-
-	case strings.Contains(desktop, "lxqt"):
-		_ = exec.Command("pcmanfm-qt", "--set-wallpaper", imgPath).Run()
-
-	case strings.Contains(desktop, "hyprland"):
-		if err := exec.Command("hyprctl", "hyprpaper", "wallpaper", ","+imgPath).Run(); err != nil {
-			_ = exec.Command("swaybg", "-i", imgPath, "-m", "fill").Start()
-		}
-
-	case strings.Contains(desktop, "sway"):
-		_ = exec.Command("swaybg", "-i", imgPath, "-m", "fill").Start()
-
-	default:
-		if err := exec.Command("feh", "--bg-scale", imgPath).Run(); err != nil {
-			_ = exec.Command("nitrogen", "--set-zoom-fill", imgPath).Run()
-		}
-	}
-}
-
-func setWindowsWallpaper(imgPath string) {
-	user32 := syscall.NewLazyDLL("user32.dll")
-	systemParametersInfo := user32.NewProc("SystemParametersInfoW")
-	imgPathPtr, err := syscall.UTF16PtrFromString(imgPath)
-	if err != nil {
-		return
-	}
-	_, _, _ = systemParametersInfo.Call(0x0014, 0, uintptr(unsafePointer(imgPathPtr)), 0x01|0x02)
-}
-
-func runNativeMatrix() {
 	fmt.Print("\033[?25l\033[2J")
 
-	out := bufio.NewWriter(os.Stdout)
-	defer out.Flush()
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	width, height := getTermSize()
-	chars := []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*!~")
+	go func() {
+		<-sigChan
+		cleanExit(oldState)
+	}()
 
-	drops := make([]int, width)
-	isJwm := make([]bool, width)
+	go func() {
+		buf := make([]byte, 1)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if err == nil && n > 0 {
+				if buf[0] == 27 || buf[0] == 3 {
+					cleanExit(oldState)
+				}
+			}
+		}
+	}()
 
-	for i := range drops {
-		drops[i] = rand.Intn(height)
-		isJwm[i] = rand.Float32() < 0.25
+	runMatrixRain()
+}
+
+func cleanExit(oldState *term.State) {
+	fmt.Print("\033[?25h\033[0m\033[2J\033[1;1H")
+	if oldState != nil {
+		_ = term.Restore(int(os.Stdin.Fd()), oldState)
+	}
+	os.Exit(0)
+}
+
+func extractAndSetWallpaper() error {
+	tempDir := os.TempDir()
+	imgPath := filepath.Join(tempDir, "elliot.jpg")
+
+	if err := os.WriteFile(imgPath, embeddedImageData, 0644); err != nil {
+		return err
 	}
 
-	ticker := time.NewTicker(30 * time.Millisecond)
+	return setWallpaper(imgPath)
+}
+
+func setWallpaper(imagePath string) error {
+	switch runtime.GOOS {
+	case "windows":
+		psCmd := fmt.Sprintf(
+			`Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class Wallpaper { [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni); }'; [Wallpaper]::SystemParametersInfo(20, 0, "%s", 3)`,
+			imagePath,
+		)
+		cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd)
+		return cmd.Run()
+
+	case "linux":
+		var err error
+		if _, e := exec.LookPath("gsettings"); e == nil {
+			err = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri", "file://"+imagePath).Run()
+			_ = exec.Command("gsettings", "set", "org.gnome.desktop.background", "picture-uri-dark", "file://"+imagePath).Run()
+		} else if _, e := exec.LookPath("hyprctl"); e == nil {
+			err = exec.Command("hyprctl", "hyprpaper", "wallpaper", ","+imagePath).Run()
+		} else if _, e := exec.LookPath("swaymsg"); e == nil {
+			err = exec.Command("swaymsg", "output * bg", imagePath, "fill").Run()
+		} else if _, e := exec.LookPath("feh"); e == nil {
+			err = exec.Command("feh", "--bg-fill", imagePath).Run()
+		}
+		return err
+
+	default:
+		return fmt.Errorf("unsupported operating system")
+	}
+}
+
+func runMatrixRain() {
+	rand.Seed(time.Now().UnixNano())
+	writer := bufio.NewWriter(os.Stdout)
+
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 || height <= 0 {
+		width, height = 80, 24
+	}
+
+	drops := make([]Drop, width)
+	for i := range drops {
+		resetDrop(&drops[i], height)
+		drops[i].y = float64(rand.Intn(height))
+	}
+
+	ticker := time.NewTicker(45 * time.Millisecond)
 	defer ticker.Stop()
 
-	sigwinch := make(chan os.Signal, 1)
-	signal.Notify(sigwinch, syscall.SIGWINCH)
+	jwmText := []rune("JWM")
+	jwmX := -1
+	jwmY := -1
 
-	for {
-		select {
-		case <-sigwinch:
-			width, height = getTermSize()
-			drops = make([]int, width)
-			isJwm = make([]bool, width)
-			for i := range drops {
-				drops[i] = rand.Intn(height)
-				isJwm[i] = rand.Float32() < 0.25
-			}
-			out.WriteString("\033[2J")
-
-		case <-ticker.C:
-			for x := 0; x < width; x++ {
-				y := drops[x]
-
-				if isJwm[x] {
-					drawJwmSequence(out, x, y, height)
-				} else {
-					drawNormalSequence(out, x, y, height, chars)
-				}
-
-				if y > height+12 && rand.Float32() > 0.88 {
-					drops[x] = 0
-					isJwm[x] = rand.Float32() < 0.25
-				} else {
-					drops[x]++
-				}
-			}
-			out.Flush()
+	spawnJWM := func(w, h int) {
+		if w > 5 && h > 2 {
+			jwmX = 2 + rand.Intn(w-5)
+			jwmY = 2 + rand.Intn(h-2)
 		}
 	}
+
+	spawnJWM(width, height)
+
+	for range ticker.C {
+		if newW, newH, err := term.GetSize(int(os.Stdout.Fd())); err == nil && newW > 0 && newH > 0 {
+			if newW != width || newH != height {
+				width, height = newW, newH
+				drops = make([]Drop, width)
+				for i := range drops {
+					resetDrop(&drops[i], height)
+				}
+				writer.WriteString("\033[2J")
+				spawnJWM(width, height)
+			}
+		}
+
+		jwmHit := false
+
+		for x := 0; x < width; x++ {
+			d := &drops[x]
+			headY := int(d.y)
+
+			if headY > 0 && headY <= height {
+				char := matrixChars[rand.Intn(len(matrixChars))]
+				writer.WriteString(fmt.Sprintf("\033[%d;%dH%s%c", headY, x+1, brightWhite, char))
+			}
+
+			for i := 1; i <= d.length; i++ {
+				trailY := headY - i
+				if trailY > 0 && trailY <= height {
+					char := matrixChars[rand.Intn(len(matrixChars))]
+					var color string
+					if i < d.length/3 {
+						color = brightGreen
+					} else {
+						color = dimGreen
+					}
+					writer.WriteString(fmt.Sprintf("\033[%d;%dH%s%c", trailY, x+1, color, char))
+				}
+			}
+
+			clearY := headY - d.length - 1
+			if clearY > 0 && clearY <= height {
+				writer.WriteString(fmt.Sprintf("\033[%d;%dH ", clearY, x+1))
+			}
+
+			if jwmX > 0 && jwmY > 0 {
+				for i := 0; i < len(jwmText); i++ {
+					targetX := jwmX + i
+					if x+1 == targetX {
+						if headY >= jwmY && headY-d.length <= jwmY {
+							jwmHit = true
+						}
+					}
+				}
+			}
+
+			d.y += d.speed
+			if int(d.y)-d.length > height {
+				resetDrop(d, height)
+			}
+		}
+
+		if jwmHit {
+			spawnJWM(width, height)
+		} else if jwmX > 0 && jwmY > 0 {
+			for i, ch := range jwmText {
+				targetX := jwmX + i
+				if targetX <= width {
+					writer.WriteString(fmt.Sprintf("\033[%d;%dH%s%c", jwmY, targetX, jwmWhite, ch))
+				}
+			}
+		}
+
+		writer.Flush()
+	}
 }
 
-func getTermSize() (int, int) {
-	w, h, err := term.GetSize(int(os.Stdout.Fd()))
-	if err != nil || w <= 0 || h <= 0 {
-		return 80, 24
-	}
-	return w, h
-}
-
-func drawNormalSequence(out *bufio.Writer, x, y, height int, chars []rune) {
-	if y > 0 && y <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[1;37m%c", y, x+1, chars[rand.Intn(len(chars))])
-	}
-	if y-1 > 0 && y-1 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[1;32m%c", y-1, x+1, chars[rand.Intn(len(chars))])
-	}
-	if y-4 > 0 && y-4 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[0;32m%c", y-4, x+1, chars[rand.Intn(len(chars))])
-	}
-	if y-12 > 0 && y-12 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH ", y-12, x+1)
-	}
-}
-
-func drawJwmSequence(out *bufio.Writer, x, y, height int) {
-	jwm := []rune{'J', 'w', 'm'}
-
-	if y > 0 && y <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[1;37m%c", y, x+1, jwm[0])
-	}
-	if y-1 > 0 && y-1 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[1;32m%c", y-1, x+1, jwm[1])
-	}
-	if y-2 > 0 && y-2 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH\033[1;32m%c", y-2, x+1, jwm[2])
-	}
-	if y-10 > 0 && y-10 <= height {
-		fmt.Fprintf(out, "\033[%d;%dH ", y-10, x+1)
-	}
-}
-
-func unsafePointer(ptr *uint16) uintptr {
-	return uintptr(uintptr(0) + uintptr(uintptr(0)))
+func resetDrop(d *Drop, height int) {
+	d.y = 0
+	d.speed = 0.25 + rand.Float64()*0.45
+	d.length = 10 + rand.Intn(14)
 }
